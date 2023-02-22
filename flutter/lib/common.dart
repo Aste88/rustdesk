@@ -49,6 +49,11 @@ int androidVersion = 0;
 int windowsBuildNumber = 0;
 DesktopType? desktopType;
 
+/// Check if the app is running with single view mode.
+bool isSingleViewApp() {
+  return desktopType == DesktopType.cm;
+}
+
 /// * debug or test only, DO NOT enable in release build
 bool isTest = false;
 
@@ -212,6 +217,9 @@ class MyTheme {
             style: ButtonStyle(splashFactory: NoSplash.splashFactory),
           )
         : null,
+    checkboxTheme: const CheckboxThemeData(
+      checkColor: MaterialStatePropertyAll(dark)
+    ),
   ).copyWith(
     extensions: <ThemeExtension<dynamic>>[
       ColorThemeExtension.dark,
@@ -331,6 +339,9 @@ closeConnection({String? id}) {
 }
 
 void window_on_top(int? id) {
+  if (!isDesktop) {
+    return;
+  }
   if (id == null) {
     // main window
     windowManager.restore();
@@ -492,12 +503,14 @@ class OverlayDialogManager {
                   Offstage(
                       offstage: !showCancel,
                       child: Center(
-                          child: TextButton(
-                              style: flatButtonStyle,
-                              onPressed: cancel,
-                              child: Text(translate('Cancel'),
-                                  style:
-                                      const TextStyle(color: MyTheme.accent)))))
+                          child: isDesktop
+                              ? dialogButton('Cancel', onPressed: cancel)
+                              : TextButton(
+                                  style: flatButtonStyle,
+                                  onPressed: cancel,
+                                  child: Text(translate('Cancel'),
+                                      style: const TextStyle(
+                                          color: MyTheme.accent)))))
                 ])),
         onCancel: showCancel ? cancel : null,
       );
@@ -624,6 +637,7 @@ class CustomAlertDialog extends StatelessWidget {
       if (!scopeNode.hasFocus) scopeNode.requestFocus();
     });
     const double padding = 16;
+    bool tabTapped = false;
     return FocusScope(
       node: scopeNode,
       autofocus: true,
@@ -633,13 +647,15 @@ class CustomAlertDialog extends StatelessWidget {
             onCancel?.call();
           }
           return KeyEventResult.handled; // avoid TextField exception on escape
-        } else if (onSubmit != null &&
+        } else if (!tabTapped &&
+            onSubmit != null &&
             key.logicalKey == LogicalKeyboardKey.enter) {
           if (key is RawKeyDownEvent) onSubmit?.call();
           return KeyEventResult.handled;
         } else if (key.logicalKey == LogicalKeyboardKey.tab) {
           if (key is RawKeyDownEvent) {
             scopeNode.nextFocus();
+            tabTapped = true;
           }
           return KeyEventResult.handled;
         }
@@ -648,8 +664,9 @@ class CustomAlertDialog extends StatelessWidget {
       child: AlertDialog(
         scrollable: true,
         title: title,
-        contentPadding: EdgeInsets.fromLTRB(
-            contentPadding ?? padding, 25, contentPadding ?? padding, 10),
+        titlePadding: EdgeInsets.fromLTRB(padding, 24, padding, 0),
+        contentPadding: EdgeInsets.fromLTRB(contentPadding ?? padding, 25,
+            contentPadding ?? padding, actions is List ? 10 : padding),
         content: ConstrainedBox(
           constraints: contentBoxConstraints,
           child: Theme(
@@ -659,7 +676,7 @@ class CustomAlertDialog extends StatelessWidget {
               child: content),
         ),
         actions: actions,
-        actionsPadding: EdgeInsets.fromLTRB(0, 0, padding, padding),
+        actionsPadding: EdgeInsets.fromLTRB(padding, 0, padding, padding),
       ),
     );
   }
@@ -667,7 +684,7 @@ class CustomAlertDialog extends StatelessWidget {
 
 void msgBox(String id, String type, String title, String text, String link,
     OverlayDialogManager dialogManager,
-    {bool? hasCancel}) {
+    {bool? hasCancel, ReconnectHandle? reconnect}) {
   dialogManager.dismissAll();
   List<Widget> buttons = [];
   bool hasOk = false;
@@ -705,6 +722,13 @@ void msgBox(String id, String type, String title, String text, String link,
         0,
         dialogButton('Close', onPressed: () {
           dialogManager.dismissAll();
+        }));
+  }
+  if (reconnect != null && title == "Connection Error") {
+    buttons.insert(
+        0,
+        dialogButton('Reconnect', isOutline: true, onPressed: () {
+          reconnect(dialogManager, id, false);
         }));
   }
   if (link.isNotEmpty) {
@@ -1399,13 +1423,14 @@ bool callUniLinksUriHandler(Uri uri) {
 connectMainDesktop(String id,
     {required bool isFileTransfer,
     required bool isTcpTunneling,
-    required bool isRDP}) async {
+    required bool isRDP,
+    bool? forceRelay}) async {
   if (isFileTransfer) {
-    await rustDeskWinManager.newFileTransfer(id);
+    await rustDeskWinManager.newFileTransfer(id, forceRelay: forceRelay);
   } else if (isTcpTunneling || isRDP) {
-    await rustDeskWinManager.newPortForward(id, isRDP);
+    await rustDeskWinManager.newPortForward(id, isRDP, forceRelay: forceRelay);
   } else {
-    await rustDeskWinManager.newRemoteDesktop(id);
+    await rustDeskWinManager.newRemoteDesktop(id, forceRelay: forceRelay);
   }
 }
 
@@ -1416,7 +1441,8 @@ connectMainDesktop(String id,
 connect(BuildContext context, String id,
     {bool isFileTransfer = false,
     bool isTcpTunneling = false,
-    bool isRDP = false}) async {
+    bool isRDP = false,
+    bool forceRelay = false}) async {
   if (id == '') return;
   id = id.replaceAll(' ', '');
   assert(!(isFileTransfer && isTcpTunneling && isRDP),
@@ -1424,18 +1450,18 @@ connect(BuildContext context, String id,
 
   if (isDesktop) {
     if (desktopType == DesktopType.main) {
-      await connectMainDesktop(
-        id,
-        isFileTransfer: isFileTransfer,
-        isTcpTunneling: isTcpTunneling,
-        isRDP: isRDP,
-      );
+      await connectMainDesktop(id,
+          isFileTransfer: isFileTransfer,
+          isTcpTunneling: isTcpTunneling,
+          isRDP: isRDP,
+          forceRelay: forceRelay);
     } else {
       await rustDeskWinManager.call(WindowType.Main, kWindowConnect, {
         'id': id,
         'isFileTransfer': isFileTransfer,
         'isTcpTunneling': isTcpTunneling,
         'isRDP': isRDP,
+        "forceRelay": forceRelay,
       });
     }
   } else {
@@ -1729,6 +1755,7 @@ Future<void> updateSystemWindowTheme() async {
     }
   }
 }
+
 /// macOS only
 ///
 /// Note: not found a general solution for rust based AVFoundation bingding.
@@ -1755,4 +1782,28 @@ Future<PermissionAuthorizeType> osxCanRecordAudio() async {
 
 Future<bool> osxRequestAudio() async {
   return await kMacOSPermChannel.invokeMethod("requestRecordAudio");
+}
+
+class DraggableNeverScrollableScrollPhysics extends ScrollPhysics {
+  /// Creates scroll physics that does not let the user scroll.
+  const DraggableNeverScrollableScrollPhysics({super.parent});
+
+  @override
+  DraggableNeverScrollableScrollPhysics applyTo(ScrollPhysics? ancestor) {
+    return DraggableNeverScrollableScrollPhysics(parent: buildParent(ancestor));
+  }
+
+  @override
+  bool shouldAcceptUserOffset(ScrollMetrics position) {
+    // TODO: find a better solution to check if the offset change is caused by the scrollbar.
+    // Workaround: when dragging with the scrollbar, it always triggers an [IdleScrollActivity].
+    if (position is ScrollPositionWithSingleContext) {
+      // ignore: invalid_use_of_protected_member, invalid_use_of_visible_for_testing_member
+      return position.activity is IdleScrollActivity;
+    }
+    return false;
+  }
+
+  @override
+  bool get allowImplicitScrolling => false;
 }

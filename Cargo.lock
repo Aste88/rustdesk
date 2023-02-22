@@ -1566,7 +1566,6 @@ version = "0.0.14"
 dependencies = [
  "core-graphics 0.22.3",
  "hbb_common",
- "libc",
  "log",
  "objc",
  "pkg-config",
@@ -2598,6 +2597,7 @@ name = "hbb_common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "backtrace",
  "bytes",
  "chrono",
  "confy",
@@ -2608,9 +2608,11 @@ dependencies = [
  "futures",
  "futures-util",
  "lazy_static",
+ "libc",
  "log",
  "mac_address",
  "machine-uid",
+ "osascript",
  "protobuf",
  "protobuf-codegen",
  "quinn",
@@ -2621,6 +2623,7 @@ dependencies = [
  "serde_json 1.0.89",
  "socket2 0.3.19",
  "sodiumoxide",
+ "sysinfo",
  "tokio",
  "tokio-socks",
  "tokio-util",
@@ -3926,6 +3929,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b7820b9daea5457c9f21c69448905d723fbd21136ccf521748f23fd49e723ee"
 
 [[package]]
+name = "osascript"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38731fa859ef679f1aec66ca9562165926b442f298467f76f5990f431efe87dc"
+dependencies = [
+ "serde 1.0.149",
+ "serde_derive",
+ "serde_json 1.0.89",
+]
+
+[[package]]
 name = "pango"
 version = "0.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4554,12 +4568,13 @@ dependencies = [
 [[package]]
 name = "rdev"
 version = "0.5.0-2"
-source = "git+https://github.com/fufesou/rdev#cedc4e62744566775026af4b434ef799804c1130"
+source = "git+https://github.com/fufesou/rdev#5b9fb5e42117f44e0ce0fe7cf2bddf270c75f1dc"
 dependencies = [
  "cocoa",
  "core-foundation 0.9.3",
  "core-foundation-sys 0.8.3",
  "core-graphics 0.22.3",
+ "dispatch",
  "enum-map",
  "epoll",
  "inotify",
@@ -4812,7 +4827,6 @@ dependencies = [
  "arboard",
  "async-process",
  "async-trait",
- "backtrace",
  "base64",
  "bytes",
  "cc",
@@ -4846,7 +4860,6 @@ dependencies = [
  "include_dir",
  "jni 0.19.0",
  "lazy_static",
- "libc",
  "libpulse-binding",
  "libpulse-simple-binding",
  "mac_address",
@@ -4875,7 +4888,6 @@ dependencies = [
  "shutdown_hooks",
  "simple_rc",
  "sys-locale",
- "sysinfo",
  "system_shutdown",
  "tao",
  "tray-icon",
@@ -5045,7 +5057,6 @@ dependencies = [
  "hwcodec",
  "jni 0.19.0",
  "lazy_static",
- "libc",
  "log",
  "ndk 0.7.0",
  "num_cpus",
