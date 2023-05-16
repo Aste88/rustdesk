@@ -17,11 +17,15 @@ use core_graphics::{
     display::{kCGNullWindowID, kCGWindowListOptionOnScreenOnly, CGWindowListCopyWindowInfo},
     window::{kCGWindowName, kCGWindowOwnerPID},
 };
-use hbb_common::{allow_err, bail, log};
+use hbb_common::{allow_err, anyhow::anyhow, bail, libc, log, message_proto::Resolution};
 use include_dir::{include_dir, Dir};
 use objc::{class, msg_send, sel, sel_impl};
 use scrap::{libc::c_void, quartz::ffi::*};
-use std::path::PathBuf;
+use std::{
+    ffi::{c_char, CString},
+    mem::size_of,
+    path::PathBuf,
+};
 
 static PRIVILEGES_SCRIPTS_DIR: Dir =
     include_dir!("$CARGO_MANIFEST_DIR/src/platform/privileges_scripts");
@@ -34,6 +38,18 @@ extern "C" {
     static kAXTrustedCheckOptionPrompt: CFStringRef;
     fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> BOOL;
     fn InputMonitoringAuthStatus(_: BOOL) -> BOOL;
+    fn MacCheckAdminAuthorization() -> BOOL;
+    fn Elevate(process: *const c_char, args: *const *const c_char) -> BOOL;
+    fn MacGetModeNum(display: u32, numModes: *mut u32) -> BOOL;
+    fn MacGetModes(
+        display: u32,
+        widths: *mut u32,
+        heights: *mut u32,
+        max: u32,
+        numModes: *mut u32,
+    ) -> BOOL;
+    fn MacGetMode(display: u32, width: *mut u32, height: *mut u32) -> BOOL;
+    fn MacSetMode(display: u32, width: u32, height: u32) -> BOOL;
 }
 
 pub fn is_process_trusted(prompt: bool) -> bool {
@@ -171,7 +187,7 @@ pub fn is_installed_daemon(prompt: bool) -> bool {
     false
 }
 
-pub fn uninstall() -> bool {
+pub fn uninstall(show_new_window: bool) -> bool {
     // to-do: do together with win/linux about refactory start/stop service
     if !is_installed_daemon(false) {
         return false;
@@ -200,20 +216,28 @@ pub fn uninstall() -> bool {
                 );
                 if uninstalled {
                     crate::ipc::set_option("stop-service", "Y");
+                    let _ = crate::ipc::close_all_instances();
                     // leave ipc a little time
                     std::thread::sleep(std::time::Duration::from_millis(300));
                     std::process::Command::new("launchctl")
                         .args(&["remove", &format!("{}_server", crate::get_full_name())])
                         .status()
                         .ok();
-                    std::process::Command::new("sh")
-                        .arg("-c")
-                        .arg(&format!(
-                            "sleep 0.5; open /Applications/{}.app",
-                            crate::get_app_name(),
-                        ))
-                        .spawn()
-                        .ok();
+                    if show_new_window {
+                        std::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&format!(
+                                "sleep 0.5; open /Applications/{}.app",
+                                crate::get_app_name(),
+                            ))
+                            .spawn()
+                            .ok();
+                    } else {
+                        std::process::Command::new("pkill")
+                            .arg(crate::get_app_name())
+                            .status()
+                            .ok();
+                    }
                     quit_gui();
                 }
             }
@@ -563,7 +587,7 @@ fn check_main_window() -> bool {
     sys.refresh_processes();
     let app = format!("/Applications/{}.app", crate::get_app_name());
     let my_uid = sys
-        .process((std::process::id() as i32).into())
+        .process((std::process::id() as usize).into())
         .map(|x| x.user_id())
         .unwrap_or_default();
     for (_, p) in sys.processes().iter() {
@@ -584,6 +608,98 @@ pub fn handle_application_should_open_untitled_file() {
     if x == "--server" || x == "--cm" || x == "--tray" {
         if crate::platform::macos::check_main_window() {
             allow_err!(crate::ipc::send_url_scheme("rustdesk:".into()));
+        }
+    }
+}
+
+pub fn resolutions(name: &str) -> Vec<Resolution> {
+    let mut v = vec![];
+    if let Ok(display) = name.parse::<u32>() {
+        let mut num = 0;
+        unsafe {
+            if YES == MacGetModeNum(display, &mut num) {
+                let (mut widths, mut heights) = (vec![0; num as _], vec![0; num as _]);
+                let mut real_num = 0;
+                if YES
+                    == MacGetModes(
+                        display,
+                        widths.as_mut_ptr(),
+                        heights.as_mut_ptr(),
+                        num,
+                        &mut real_num,
+                    )
+                {
+                    if real_num <= num {
+                        for i in 0..real_num {
+                            let resolution = Resolution {
+                                width: widths[i as usize] as _,
+                                height: heights[i as usize] as _,
+                                ..Default::default()
+                            };
+                            if !v.contains(&resolution) {
+                                v.push(resolution);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    v
+}
+
+pub fn current_resolution(name: &str) -> ResultType<Resolution> {
+    let display = name.parse::<u32>().map_err(|e| anyhow!(e))?;
+    unsafe {
+        let (mut width, mut height) = (0, 0);
+        if NO == MacGetMode(display, &mut width, &mut height) {
+            bail!("MacGetMode failed");
+        }
+        Ok(Resolution {
+            width: width as _,
+            height: height as _,
+            ..Default::default()
+        })
+    }
+}
+
+pub fn change_resolution(name: &str, width: usize, height: usize) -> ResultType<()> {
+    let display = name.parse::<u32>().map_err(|e| anyhow!(e))?;
+    unsafe {
+        if NO == MacSetMode(display, width as _, height as _) {
+            bail!("MacSetMode failed");
+        }
+    }
+    Ok(())
+}
+
+pub fn check_super_user_permission() -> ResultType<bool> {
+    unsafe { Ok(MacCheckAdminAuthorization() == YES) }
+}
+
+pub fn elevate(args: Vec<&str>) -> ResultType<bool> {
+    let cmd = std::env::current_exe()?;
+    match cmd.to_str() {
+        Some(cmd) => {
+            let cmd = CString::new(cmd)?;
+            let mut cstring_args = Vec::new();
+            for arg in args.iter() {
+                cstring_args.push(CString::new(*arg)?);
+            }
+            unsafe {
+                let args_ptr: *mut *const c_char =
+                    libc::malloc((cstring_args.len() + 1) * size_of::<*const c_char>()) as _;
+                for i in 0..cstring_args.len() {
+                    *args_ptr.add(i) = cstring_args[i].as_ptr() as _;
+                }
+                *args_ptr.add(cstring_args.len()) = std::ptr::null() as _;
+                let r = Elevate(cmd.as_ptr() as _, args_ptr as _);
+                libc::free(args_ptr as _);
+                Ok(r == YES)
+            }
+        }
+        None => {
+            bail!("Failed to get current exe str");
         }
     }
 }

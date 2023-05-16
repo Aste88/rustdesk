@@ -8,6 +8,9 @@ use parity_tokio_ipc::{
 };
 use serde_derive::{Deserialize, Serialize};
 
+#[cfg(all(feature = "flutter", feature = "plugin_framework"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::plugin::ipc::Plugin;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use clipboard::ClipboardFile;
 use hbb_common::{
@@ -33,6 +36,8 @@ pub enum PrivacyModeState {
     OffByPeer,
     OffUnknown,
 }
+// IPC actions here.
+pub const IPC_ACTION_CLOSE: &str = "close";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "t", content = "c")]
@@ -142,7 +147,7 @@ pub enum DataPortableService {
     Ping,
     Pong,
     ConnCount(Option<usize>),
-    Mouse(Vec<u8>),
+    Mouse((Vec<u8>, i32)),
     Key(Vec<u8>),
     RequestStart,
     WillClose,
@@ -215,6 +220,9 @@ pub enum Data {
     StartVoiceCall,
     VoiceCallResponse(bool),
     CloseVoiceCall(String),
+    #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    Plugin(Plugin),
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -251,7 +259,7 @@ pub async fn start(postfix: &str) -> ResultType<()> {
 
 pub async fn new_listener(postfix: &str) -> ResultType<Incoming> {
     let path = Config::ipc_path(postfix);
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "android", target_os = "ios")))]
     check_pid(postfix).await;
     let mut endpoint = Endpoint::new(path.clone());
     match SecurityAttributes::allow_everyone_create() {
@@ -383,6 +391,12 @@ async fn handle(data: Data, stream: &mut Connection) {
                     ));
                 } else if name == "rendezvous_servers" {
                     value = Some(Config::get_rendezvous_servers().join(","));
+                } else if name == "fingerprint" {
+                    value = if Config::get_key_confirmed() {
+                        Some(crate::common::pk_to_fingerprint(Config::get_key_pair().1))
+                    } else {
+                        None
+                    };
                 } else {
                     value = None;
                 }
@@ -447,6 +461,9 @@ async fn handle(data: Data, stream: &mut Connection) {
                     .await
             );
         }
+        #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        Data::Plugin(plugin) => crate::plugin::ipc::handle_plugin(plugin, stream).await,
         _ => {}
     }
 }
@@ -541,19 +558,19 @@ fn get_pid_file(postfix: &str) -> String {
     format!("{}.pid", path)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android", target_os = "ios")))]
 async fn check_pid(postfix: &str) {
     let pid_file = get_pid_file(postfix);
     if let Ok(mut file) = File::open(&pid_file) {
         let mut content = String::new();
         file.read_to_string(&mut content).ok();
-        let pid = content.parse::<i32>().unwrap_or(0);
+        let pid = content.parse::<usize>().unwrap_or(0);
         if pid > 0 {
             use hbb_common::sysinfo::{ProcessExt, System, SystemExt};
             let mut sys = System::new();
             sys.refresh_processes();
             if let Some(p) = sys.process(pid.into()) {
-                if let Some(current) = sys.process((std::process::id() as i32).into()) {
+                if let Some(current) = sys.process((std::process::id() as usize).into()) {
                     if current.name() == p.name() {
                         // double check with connect
                         if connect(1000, postfix).await.is_ok() {
@@ -688,6 +705,12 @@ pub fn get_permanent_password() -> String {
     } else {
         Config::get_permanent_password()
     }
+}
+
+pub fn get_fingerprint() -> String {
+    get_config("fingerprint")
+        .unwrap_or_default()
+        .unwrap_or_default()
 }
 
 pub fn set_permanent_password(v: String) -> ResultType<()> {
@@ -848,6 +871,14 @@ pub async fn send_url_scheme(url: String) -> ResultType<()> {
         .send(&Data::UrlLink(url))
         .await?;
     Ok(())
+}
+
+// Emit `close` events to ipc.
+pub fn close_all_instances() -> ResultType<bool> {
+    match crate::ipc::send_url_scheme(IPC_ACTION_CLOSE.to_owned()) {
+        Ok(_) => Ok(true),
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(test)]

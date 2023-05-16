@@ -4,7 +4,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::Result;
@@ -25,7 +25,7 @@ use crate::{
 
 pub const RENDEZVOUS_TIMEOUT: u64 = 12_000;
 pub const CONNECT_TIMEOUT: u64 = 18_000;
-pub const READ_TIMEOUT: u64 = 30_000;
+pub const READ_TIMEOUT: u64 = 18_000;
 pub const REG_INTERVAL: i64 = 12_000;
 pub const COMPRESS_LEVEL: i32 = 3;
 const SERIAL: i32 = 3;
@@ -43,6 +43,7 @@ lazy_static::lazy_static! {
     static ref CONFIG: Arc<RwLock<Config>> = Arc::new(RwLock::new(Config::load()));
     static ref CONFIG2: Arc<RwLock<Config2>> = Arc::new(RwLock::new(Config2::load()));
     static ref LOCAL_CONFIG: Arc<RwLock<LocalConfig>> = Arc::new(RwLock::new(LocalConfig::load()));
+    pub static ref CONFIG_OIDC: Arc<RwLock<ConfigOidc>> = Arc::new(RwLock::new(ConfigOidc::load()));
     pub static ref ONLINE: Arc<Mutex<HashMap<String, i64>>> = Default::default();
     pub static ref PROD_RENDEZVOUS_SERVER: Arc<RwLock<String>> = Arc::new(RwLock::new(match option_env!("RENDEZVOUS_SERVER") {
         Some(key) if !key.is_empty() => key,
@@ -51,6 +52,7 @@ lazy_static::lazy_static! {
     pub static ref APP_NAME: Arc<RwLock<String>> = Arc::new(RwLock::new("RustDesk".to_owned()));
     static ref KEY_PAIR: Arc<Mutex<Option<KeyPair>>> = Default::default();
     static ref HW_CODEC_CONFIG: Arc<RwLock<HwCodecConfig>> = Arc::new(RwLock::new(HwCodecConfig::load()));
+    static ref USER_DEFAULT_CONFIG: Arc<RwLock<(UserDefaultConfig, Instant)>> = Arc::new(RwLock::new((UserDefaultConfig::load(), Instant::now())));
 }
 
 lazy_static::lazy_static! {
@@ -62,11 +64,15 @@ lazy_static::lazy_static! {
     pub static ref APP_HOME_DIR: Arc<RwLock<String>> = Default::default();
 }
 
-// #[cfg(any(target_os = "android", target_os = "ios"))]
+pub const LINK_DOCS_HOME: &str = "https://rustdesk.com/docs/en/";
+pub const LINK_DOCS_X11_REQUIRED: &str = "https://rustdesk.com/docs/en/manual/linux/#x11-required";
+pub const LINK_HEADLESS_LINUX_SUPPORT: &str =
+    "https://github.com/rustdesk/rustdesk/wiki/Headless-Linux-Support";
 lazy_static::lazy_static! {
     pub static ref HELPER_URL: HashMap<&'static str, &'static str> = HashMap::from([
-        ("rustdesk docs home", "https://rustdesk.com/docs/en/"),
-        ("rustdesk docs x11-required", "https://rustdesk.com/docs/en/manual/linux/#x11-required"),
+        ("rustdesk docs home", LINK_DOCS_HOME),
+        ("rustdesk docs x11-required", LINK_DOCS_X11_REQUIRED),
+        ("rustdesk x11 headless", LINK_HEADLESS_LINUX_SUPPORT),
         ]);
 }
 
@@ -110,10 +116,10 @@ macro_rules! serde_field_string {
 }
 
 macro_rules! serde_field_bool {
-    ($struct_name: ident, $field_name: literal, $func: ident) => {
+    ($struct_name: ident, $field_name: literal, $func: ident, $default: literal) => {
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         pub struct $struct_name {
-            #[serde(rename = $field_name)]
+            #[serde(default = $default, rename = $field_name)]
             pub v: bool,
         }
         impl Default for $struct_name {
@@ -123,7 +129,7 @@ macro_rules! serde_field_bool {
         }
         impl $struct_name {
             pub fn $func() -> bool {
-                UserDefaultConfig::load().get($field_name) == "Y"
+                UserDefaultConfig::read().get($field_name) == "Y"
             }
         }
     };
@@ -217,6 +223,8 @@ pub struct PeerConfig {
     pub lock_after_session_end: LockAfterSessionEnd,
     #[serde(flatten)]
     pub privacy_mode: PrivacyMode,
+    #[serde(flatten)]
+    pub allow_swap_key: AllowSwapKey,
     #[serde(default)]
     pub port_forwards: Vec<(i32, String, i32)>,
     #[serde(default)]
@@ -231,10 +239,12 @@ pub struct PeerConfig {
     pub show_quality_monitor: ShowQualityMonitor,
     #[serde(default)]
     pub keyboard_mode: String,
+    #[serde(flatten)]
+    pub view_only: ViewOnly,
 
     // The other scalar value must before this
     #[serde(default, deserialize_with = "PeerConfig::deserialize_options")]
-    pub options: HashMap<String, String>,
+    pub options: HashMap<String, String>, // not use delete to represent default values
     // Various data for flutter ui
     #[serde(default)]
     pub ui_flutter: HashMap<String, String>,
@@ -255,6 +265,35 @@ pub struct PeerInfoSerde {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ConfigOidc {
+    #[serde(default)]
+    pub max_auth_count: usize,
+    #[serde(default)]
+    pub callback_url: String,
+    #[serde(default)]
+    pub providers: HashMap<String, ConfigOidcProvider>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ConfigOidcProvider {
+    // seconds. 0 means never expires
+    #[serde(default)]
+    pub refresh_token_expires_in: u32,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+    #[serde(default)]
+    pub issuer: Option<String>,
+    #[serde(default)]
+    pub authorization_endpoint: Option<String>,
+    #[serde(default)]
+    pub token_endpoint: Option<String>,
+    #[serde(default)]
+    pub userinfo_endpoint: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct TransferSerde {
     #[serde(default)]
     pub write_jobs: Vec<String>,
@@ -262,6 +301,7 @@ pub struct TransferSerde {
     pub read_jobs: Vec<String>,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn patch(path: PathBuf) -> PathBuf {
     if let Some(_tmp) = path.to_str() {
         #[cfg(windows)]
@@ -282,6 +322,16 @@ fn patch(path: PathBuf) -> PathBuf {
                         .trim()
                         .to_owned();
                     if user != "root" {
+                        let cmd = format!("getent passwd '{}' | awk -F':' '{{print $6}}'", user);
+                        if let Ok(output) = std::process::Command::new(cmd).output() {
+                            let home_dir = String::from_utf8_lossy(&output.stdout)
+                                .to_string()
+                                .trim()
+                                .to_owned();
+                            if !home_dir.is_empty() {
+                                return home_dir.into();
+                            }
+                        }
                         return format!("/home/{user}").into();
                     }
                 }
@@ -879,15 +929,13 @@ impl PeerConfig {
                     decrypt_vec_or_original(&config.password, PASSWORD_ENC_VERSION);
                 config.password = password;
                 store = store || store2;
-                if let Some(v) = config.options.get_mut("rdp_password") {
-                    let (password, _, store2) = decrypt_str_or_original(v, PASSWORD_ENC_VERSION);
-                    *v = password;
-                    store = store || store2;
-                }
-                if let Some(v) = config.options.get_mut("os-password") {
-                    let (password, _, store2) = decrypt_str_or_original(v, PASSWORD_ENC_VERSION);
-                    *v = password;
-                    store = store || store2;
+                for opt in ["rdp_password", "os-username", "os-password"] {
+                    if let Some(v) = config.options.get_mut(opt) {
+                        let (encrypted, _, store2) =
+                            decrypt_str_or_original(v, PASSWORD_ENC_VERSION);
+                        *v = encrypted;
+                        store = store || store2;
+                    }
                 }
                 if store {
                     config.store(id);
@@ -905,12 +953,11 @@ impl PeerConfig {
         let _lock = CONFIG.read().unwrap();
         let mut config = self.clone();
         config.password = encrypt_vec_or_original(&config.password, PASSWORD_ENC_VERSION);
-        if let Some(v) = config.options.get_mut("rdp_password") {
-            *v = encrypt_str_or_original(v, PASSWORD_ENC_VERSION)
+        for opt in ["rdp_password", "os-username", "os-password"] {
+            if let Some(v) = config.options.get_mut(opt) {
+                *v = encrypt_str_or_original(v, PASSWORD_ENC_VERSION)
+            }
         }
-        if let Some(v) = config.options.get_mut("os-password") {
-            *v = encrypt_str_or_original(v, PASSWORD_ENC_VERSION)
-        };
         if let Err(err) = store_path(Self::path(id), config) {
             log::error!("Failed to store config: {}", err);
         }
@@ -922,13 +969,20 @@ impl PeerConfig {
 
     fn path(id: &str) -> PathBuf {
         //If the id contains invalid chars, encode it
-        let forbidden_paths = Regex::new(r".*[<>:/\\|\?\*].*").unwrap();
-        let id_encoded = if forbidden_paths.is_match(id) {
-            "base64_".to_string() + base64::encode(id, base64::Variant::Original).as_str()
+        let forbidden_paths = Regex::new(r".*[<>:/\\|\?\*].*");
+        let path: PathBuf;
+        if let Ok(forbidden_paths) = forbidden_paths {
+            let id_encoded = if forbidden_paths.is_match(id) {
+                "base64_".to_string() + base64::encode(id, base64::Variant::Original).as_str()
+            } else {
+                id.to_string()
+            };
+            path = [PEERS, id_encoded.as_str()].iter().collect();
         } else {
-            id.to_string()
-        };
-        let path: PathBuf = [PEERS, id_encoded.as_str()].iter().collect();
+            log::warn!("Regex create failed: {:?}", forbidden_paths.err());
+            // fallback for failing to create this regex.
+            path = [PEERS, id.replace(":", "_").as_str()].iter().collect();
+        }
         Config::with_extension(Config::path(path))
     }
 
@@ -978,21 +1032,21 @@ impl PeerConfig {
     serde_field_string!(
         default_view_style,
         deserialize_view_style,
-        UserDefaultConfig::load().get("view_style")
+        UserDefaultConfig::read().get("view_style")
     );
     serde_field_string!(
         default_scroll_style,
         deserialize_scroll_style,
-        UserDefaultConfig::load().get("scroll_style")
+        UserDefaultConfig::read().get("scroll_style")
     );
     serde_field_string!(
         default_image_quality,
         deserialize_image_quality,
-        UserDefaultConfig::load().get("image_quality")
+        UserDefaultConfig::read().get("image_quality")
     );
 
     fn default_custom_image_quality() -> Vec<i32> {
-        let f: f64 = UserDefaultConfig::load()
+        let f: f64 = UserDefaultConfig::read()
             .get("custom_image_quality")
             .parse()
             .unwrap_or(50.0);
@@ -1018,15 +1072,15 @@ impl PeerConfig {
         let mut mp: HashMap<String, String> = de::Deserialize::deserialize(deserializer)?;
         let mut key = "codec-preference";
         if !mp.contains_key(key) {
-            mp.insert(key.to_owned(), UserDefaultConfig::load().get(key));
+            mp.insert(key.to_owned(), UserDefaultConfig::read().get(key));
         }
         key = "custom-fps";
         if !mp.contains_key(key) {
-            mp.insert(key.to_owned(), UserDefaultConfig::load().get(key));
+            mp.insert(key.to_owned(), UserDefaultConfig::read().get(key));
         }
         key = "zoom-cursor";
         if !mp.contains_key(key) {
-            mp.insert(key.to_owned(), UserDefaultConfig::load().get(key));
+            mp.insert(key.to_owned(), UserDefaultConfig::read().get(key));
         }
         Ok(mp)
     }
@@ -1035,30 +1089,59 @@ impl PeerConfig {
 serde_field_bool!(
     ShowRemoteCursor,
     "show_remote_cursor",
-    default_show_remote_cursor
+    default_show_remote_cursor,
+    "ShowRemoteCursor::default_show_remote_cursor"
 );
 serde_field_bool!(
     ShowQualityMonitor,
     "show_quality_monitor",
-    default_show_quality_monitor
+    default_show_quality_monitor,
+    "ShowQualityMonitor::default_show_quality_monitor"
 );
-serde_field_bool!(DisableAudio, "disable_audio", default_disable_audio);
+serde_field_bool!(
+    DisableAudio,
+    "disable_audio",
+    default_disable_audio,
+    "DisableAudio::default_disable_audio"
+);
 serde_field_bool!(
     EnableFileTransfer,
     "enable_file_transfer",
-    default_enable_file_transfer
+    default_enable_file_transfer,
+    "EnableFileTransfer::default_enable_file_transfer"
 );
 serde_field_bool!(
     DisableClipboard,
     "disable_clipboard",
-    default_disable_clipboard
+    default_disable_clipboard,
+    "DisableClipboard::default_disable_clipboard"
 );
 serde_field_bool!(
     LockAfterSessionEnd,
     "lock_after_session_end",
-    default_lock_after_session_end
+    default_lock_after_session_end,
+    "LockAfterSessionEnd::default_lock_after_session_end"
 );
-serde_field_bool!(PrivacyMode, "privacy_mode", default_privacy_mode);
+serde_field_bool!(
+    PrivacyMode,
+    "privacy_mode",
+    default_privacy_mode,
+    "PrivacyMode::default_privacy_mode"
+);
+
+serde_field_bool!(
+    AllowSwapKey,
+    "allow_swap_key",
+    default_allow_swap_key,
+    "AllowSwapKey::default_allow_swap_key"
+);
+
+serde_field_bool!(
+    ViewOnly,
+    "view_only",
+    default_view_only,
+    "ViewOnly::default_view_only"
+);
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct LocalConfig {
@@ -1273,6 +1356,14 @@ pub struct UserDefaultConfig {
 }
 
 impl UserDefaultConfig {
+    pub fn read() -> UserDefaultConfig {
+        let mut cfg = USER_DEFAULT_CONFIG.write().unwrap();
+        if cfg.1.elapsed() > Duration::from_secs(1) {
+            *cfg = (Self::load(), Instant::now());
+        }
+        cfg.0.clone()
+    }
+
     pub fn load() -> UserDefaultConfig {
         Config::load_::<UserDefaultConfig>("_default")
     }
@@ -1287,9 +1378,9 @@ impl UserDefaultConfig {
             "view_style" => self.get_string(key, "original", vec!["adaptive"]),
             "scroll_style" => self.get_string(key, "scrollauto", vec!["scrollbar"]),
             "image_quality" => self.get_string(key, "balanced", vec!["best", "low", "custom"]),
-            "codec-preference" => self.get_string(key, "auto", vec!["vp9", "h264", "h265"]),
+            "codec-preference" => self.get_string(key, "auto", vec!["vp8", "vp9", "h264", "h265"]),
             "custom_image_quality" => self.get_double_string(key, 50.0, 10.0, 100.0),
-            "custom-fps" => self.get_double_string(key, 30.0, 10.0, 120.0),
+            "custom-fps" => self.get_double_string(key, 30.0, 5.0, 120.0),
             _ => self
                 .options
                 .get(key)
@@ -1330,6 +1421,30 @@ impl UserDefaultConfig {
             }
             None => default.to_string(),
         }
+    }
+}
+
+impl ConfigOidc {
+    fn suffix() -> &'static str {
+        "_oidc"
+    }
+
+    fn load() -> Self {
+        Config::load_::<Self>(Self::suffix())._load_env()
+    }
+
+    fn _load_env(mut self) -> Self {
+        use std::env;
+        for (k, mut v) in &mut self.providers {
+            if let Ok(client_id) = env::var(format!("OIDC-{}-CLIENT-ID", k.to_uppercase())) {
+                v.client_id = client_id;
+            }
+            if let Ok(client_secret) = env::var(format!("OIDC-{}-CLIENT-SECRET", k.to_uppercase()))
+            {
+                v.client_secret = client_secret;
+            }
+        }
+        self
     }
 }
 

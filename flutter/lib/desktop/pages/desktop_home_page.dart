@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:convert';
 
 import 'package:auto_size_text/auto_size_text.dart';
-import 'package:flutter/material.dart' hide MenuItem;
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/custom_password.dart';
@@ -14,7 +14,7 @@ import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/widgets/scroll_wrapper.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/server_model.dart';
-import 'package:flutter_hbb/models/state_model.dart';
+import 'package:flutter_hbb/plugin/ui_manager.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
@@ -55,10 +55,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         buildLeftPane(context),
-        const VerticalDivider(
-          width: 1,
-          thickness: 1,
-        ),
+        const VerticalDivider(width: 1),
         Expanded(
           child: buildRightPane(context),
         ),
@@ -71,7 +68,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       value: gFFI.serverModel,
       child: Container(
         width: 200,
-        color: Theme.of(context).backgroundColor,
+        color: Theme.of(context).colorScheme.background,
         child: DesktopScrollWrapper(
           scrollController: _leftPaneScrollController,
           child: SingleChildScrollView(
@@ -92,6 +89,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                     }
                   },
                 ),
+                buildPluginEntry()
               ],
             ),
           ),
@@ -158,7 +156,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                         readOnly: true,
                         decoration: InputDecoration(
                           border: InputBorder.none,
-                          contentPadding: EdgeInsets.only(bottom: 20),
+                          contentPadding: EdgeInsets.only(top: 10, bottom: 10),
                         ),
                         style: TextStyle(
                           fontSize: 22,
@@ -185,7 +183,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           radius: 15,
           backgroundColor: hover.value
               ? Theme.of(context).scaffoldBackgroundColor
-              : Theme.of(context).backgroundColor,
+              : Theme.of(context).colorScheme.background,
           child: Icon(
             Icons.more_vert_outlined,
             size: 20,
@@ -242,7 +240,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                             readOnly: true,
                             decoration: InputDecoration(
                               border: InputBorder.none,
-                              contentPadding: EdgeInsets.only(bottom: 2),
+                              contentPadding:
+                                  EdgeInsets.only(top: 14, bottom: 10),
                             ),
                             style: TextStyle(fontSize: 15),
                           ),
@@ -254,9 +253,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                             Icons.refresh,
                             color: refreshHover.value
                                 ? textColor
-                                : Color(0xFFDDDDDD), // TODO
+                                : Color(0xFFDDDDDD),
                             size: 22,
-                          ).marginOnly(right: 8, bottom: 2),
+                          ).marginOnly(right: 8, top: 4),
                         ),
                         onTap: () => bind.mainUpdateTemporaryPassword(),
                         onHover: (value) => refreshHover.value = value,
@@ -265,11 +264,10 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                         child: Obx(
                           () => Icon(
                             Icons.edit,
-                            color: editHover.value
-                                ? textColor
-                                : Color(0xFFDDDDDD), // TODO
+                            color:
+                                editHover.value ? textColor : Color(0xFFDDDDDD),
                             size: 22,
-                          ).marginOnly(right: 8, bottom: 2),
+                          ).marginOnly(right: 8, top: 4),
                         ),
                         onTap: () => DesktopSettingPage.switch2page(1),
                         onHover: (value) => editHover.value = value,
@@ -576,6 +574,22 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     _updateTimer?.cancel();
     super.dispose();
   }
+  
+  Widget buildPluginEntry() {
+    final entries = PluginUiManager.instance.entries.entries;
+    return Offstage(
+      offstage: entries.isEmpty,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ...
+          entries.map((entry)  {
+            return entry.value;
+          })
+        ],
+      ),
+    );
+  }
 }
 
 void setPasswordDialog() async {
@@ -593,7 +607,7 @@ void setPasswordDialog() async {
     MinCharactersValidationRule(8),
   ];
 
-  gFFI.dialogManager.show((setState, close) {
+  gFFI.dialogManager.show((setState, close, context) {
     submit() {
       setState(() {
         errMsg0 = "";
@@ -638,7 +652,6 @@ void setPasswordDialog() async {
                     obscureText: true,
                     decoration: InputDecoration(
                         labelText: translate('Password'),
-                        border: const OutlineInputBorder(),
                         errorText: errMsg0.isNotEmpty ? errMsg0 : null),
                     controller: p0,
                     autofocus: true,
@@ -666,7 +679,6 @@ void setPasswordDialog() async {
                   child: TextField(
                     obscureText: true,
                     decoration: InputDecoration(
-                        border: const OutlineInputBorder(),
                         labelText: translate('Confirmation'),
                         errorText: errMsg1.isNotEmpty ? errMsg1 : null),
                     controller: p1,

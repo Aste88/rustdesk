@@ -224,7 +224,7 @@ class _AddressBookState extends State<AddressBook> {
     final style = TextStyle(fontSize: 14.0);
     String? errorMsg;
 
-    gFFI.dialogManager.show((setState, close) {
+    gFFI.dialogManager.show((setState, close, context) {
       submit() async {
         setState(() {
           isInProgress = true;
@@ -274,11 +274,7 @@ class _AddressBookState extends State<AddressBook> {
                 TextField(
                   controller: idController,
                   inputFormatters: [IDTextInputFormatter()],
-                  decoration: InputDecoration(
-                      isDense: true,
-                      border: OutlineInputBorder(),
-                      errorText: errorMsg),
-                  style: style,
+                  decoration: InputDecoration(errorText: errorMsg),
                 ),
                 Align(
                   alignment: Alignment.centerLeft,
@@ -289,11 +285,6 @@ class _AddressBookState extends State<AddressBook> {
                 ).marginOnly(top: 8, bottom: 2),
                 TextField(
                   controller: aliasController,
-                  decoration: InputDecoration(
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                  style: style,
                 ),
                 Align(
                   alignment: Alignment.centerLeft,
@@ -343,7 +334,7 @@ class _AddressBookState extends State<AddressBook> {
     var msg = "";
     var isInProgress = false;
     TextEditingController controller = TextEditingController(text: field);
-    gFFI.dialogManager.show((setState, close) {
+    gFFI.dialogManager.show((setState, close, context) {
       submit() async {
         setState(() {
           msg = "";
@@ -379,7 +370,6 @@ class _AddressBookState extends State<AddressBook> {
                   child: TextField(
                     maxLines: null,
                     decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
                       errorText: msg.isEmpty ? null : translate(msg),
                     ),
                     controller: controller,

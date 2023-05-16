@@ -13,6 +13,7 @@ import 'package:flutter_hbb/desktop/screen/desktop_port_forward_screen.dart';
 import 'package:flutter_hbb/desktop/screen/desktop_remote_screen.dart';
 import 'package:flutter_hbb/desktop/widgets/refresh_wrapper.dart';
 import 'package:flutter_hbb/models/state_model.dart';
+import 'package:flutter_hbb/plugin/handlers.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:get/get.dart';
@@ -124,6 +125,8 @@ void runMainApp(bool startService) async {
   if (startService) {
     // await windowManager.ensureInitialized();
     gFFI.serverModel.startService();
+    bind.pluginSyncUi(syncTo: kAppTypeMain);
+    bind.pluginListReload();
   }
   gFFI.userModel.refreshCurrentUser();
   runApp(App());
@@ -134,10 +137,8 @@ void runMainApp(bool startService) async {
     await restoreWindowPosition(WindowType.Main);
     // Check the startup argument, if we successfully handle the argument, we keep the main window hidden.
     final handledByUniLinks = await initUniLinks();
-    final handledByCli = checkArguments();
-    debugPrint(
-        "handled by uni links: $handledByUniLinks, handled by cli: $handledByCli");
-    if (handledByUniLinks || handledByCli) {
+    debugPrint("handled by uni links: $handledByUniLinks");
+    if (handledByUniLinks || checkArguments()) {
       windowManager.hide();
     } else {
       windowManager.show();
@@ -153,6 +154,7 @@ void runMainApp(bool startService) async {
 void runMobileApp() async {
   await initEnv(kAppTypeMain);
   if (isAndroid) androidChannelInit();
+  platformFFI.syncAndroidServiceAppDirConfigPath();
   runApp(App());
 }
 
@@ -216,7 +218,6 @@ void runMultiWindow(
 
 void runConnectionManagerScreen(bool hide) async {
   await initEnv(kAppTypeConnectionManager);
-  await bind.cmStartListenIpcThread();
   _runApp(
     '',
     const DesktopServerPage(),
@@ -250,6 +251,7 @@ void hideCmWindow() {
   windowManager.setOpacity(0);
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     bind.mainHideDocker();
+    await windowManager.minimize();
     await windowManager.hide();
   });
 }
@@ -291,17 +293,20 @@ void _runApp(
 void runInstallPage() async {
   await windowManager.ensureInitialized();
   await initEnv(kAppTypeMain);
-  _runApp('', const InstallPage(), ThemeMode.light);
-  windowManager.waitUntilReadyToShow(
-      WindowOptions(size: Size(800, 600), center: true), () async {
+  _runApp('', const InstallPage(), MyTheme.currentThemeMode());
+  WindowOptions windowOptions =
+      getHiddenTitleBarWindowOptions(size: Size(800, 600), center: true);
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
     windowManager.show();
     windowManager.focus();
     windowManager.setOpacity(1);
     windowManager.setAlignment(Alignment.center); // ensure
+    windowManager.setTitle(getWindowName());
   });
 }
 
-WindowOptions getHiddenTitleBarWindowOptions({Size? size}) {
+WindowOptions getHiddenTitleBarWindowOptions(
+    {Size? size, bool center = false}) {
   var defaultTitleBarStyle = TitleBarStyle.hidden;
   // we do not hide titlebar on win7 because of the frame overflow.
   if (kUseCompatibleUiMode) {
@@ -309,7 +314,7 @@ WindowOptions getHiddenTitleBarWindowOptions({Size? size}) {
   }
   return WindowOptions(
     size: size,
-    center: false,
+    center: center,
     backgroundColor: Colors.transparent,
     skipTaskbar: false,
     titleBarStyle: defaultTitleBarStyle,
@@ -423,6 +428,12 @@ _registerEventHandler() {
     });
     platformFFI.registerEventHandler('language', 'language', (_) async {
       reloadAllWindows();
+    });
+  }
+  // Register native handlers.
+  if (isDesktop) {
+    platformFFI.registerEventHandler('native_ui', 'native_ui', (evt) async {
+      NativeUiHandler.instance.onEvent(evt);
     });
   }
 }

@@ -4,12 +4,13 @@ import 'dart:ui' as ui;
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/shared_state.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/desktop/pages/remote_page.dart';
-import 'package:flutter_hbb/desktop/widgets/remote_menubar.dart';
+import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
 import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
 import 'package:flutter_hbb/desktop/widgets/material_mod_popup_menu.dart'
     as mod_menu;
@@ -23,9 +24,6 @@ import '../../models/platform_model.dart';
 
 class _MenuTheme {
   static const Color blueColor = MyTheme.button;
-  static const Color hoverBlueColor = MyTheme.accent;
-  static const Color redColor = Colors.redAccent;
-  static const Color hoverRedColor = Colors.red;
   // kMinInteractiveDimension
   static const double height = 20.0;
   static const double dividerHeight = 12.0;
@@ -71,6 +69,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
         page: RemotePage(
           key: ValueKey(peerId),
           id: peerId,
+          password: params['password'],
           menubarState: _menubarState,
           switchUuid: params['switch_uuid'],
           forceRelay: params['forceRelay'],
@@ -106,6 +105,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           page: RemotePage(
             key: ValueKey(id),
             id: id,
+            password: args['password'],
             menubarState: _menubarState,
             switchUuid: switchUuid,
             forceRelay: args['forceRelay'],
@@ -141,7 +141,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
               width: stateGlobal.windowBorderWidth.value),
         ),
         child: Scaffold(
-          backgroundColor: Theme.of(context).backgroundColor,
+          backgroundColor: Theme.of(context).colorScheme.background,
           body: DesktopTab(
             controller: tabController,
             onWindowCloseButton: handleWindowCloseButton,
@@ -159,20 +159,36 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
                   ],
                 );
               } else {
-                final msgDirect = translate(
-                    connectionType.direct.value == ConnectionType.strDirect
-                        ? 'Direct Connection'
-                        : 'Relay Connection');
-                final msgSecure = translate(
-                    connectionType.secure.value == ConnectionType.strSecure
-                        ? 'Secure Connection'
-                        : 'Insecure Connection');
+                bool secure =
+                    connectionType.secure.value == ConnectionType.strSecure;
+                bool direct =
+                    connectionType.direct.value == ConnectionType.strDirect;
+                var msgConn;
+                if (secure && direct) {
+                  msgConn = translate("Direct and encrypted connection");
+                } else if (secure && !direct) {
+                  msgConn = translate("Relayed and encrypted connection");
+                } else if (!secure && direct) {
+                  msgConn = translate("Direct and unencrypted connection");
+                } else {
+                  msgConn = translate("Relayed and unencrypted connection");
+                }
+                var msgFingerprint = '${translate('Fingerprint')}:\n';
+                var fingerprint = FingerprintState.find(key).value;
+                if (fingerprint.length > 5 * 8) {
+                  var first = fingerprint.substring(0, 39);
+                  var second = fingerprint.substring(40);
+                  msgFingerprint += '$first\n$second';
+                } else {
+                  msgFingerprint += fingerprint;
+                }
+
                 final tab = Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     icon,
                     Tooltip(
-                      message: '$msgDirect\n$msgSecure',
+                      message: '$msgConn\n$msgFingerprint',
                       child: SvgPicture.asset(
                         'assets/${connectionType.secure.value}${connectionType.direct.value}.svg',
                         width: themeConf.iconSize,
@@ -205,11 +221,13 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
         ),
       ),
     );
-    return Platform.isMacOS
+    return Platform.isMacOS || kUseCompatibleUiMode
         ? tabWidget
         : Obx(() => SubWindowDragToResizeArea(
               key: contentKey,
               child: tabWidget,
+              // Specially configured for a better resize area and remote control.
+              childPadding: kDragToResizeAreaPadding,
               resizeEdgeSize: stateGlobal.resizeEdgeSize.value,
               windowId: stateGlobal.windowId,
             ));
@@ -258,7 +276,9 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
       ),
     ]);
 
-    if (!ffi.canvasModel.cursorEmbedded) {
+    if (!ffi.canvasModel.cursorEmbedded &&
+        !ffi.ffiModel.viewOnly &&
+        !pi.is_wayland) {
       menu.add(MenuEntryDivider<String>());
       menu.add(RemoteMenuEntry.showRemoteCursor(
         key,
@@ -267,7 +287,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
       ));
     }
 
-    if (perms['keyboard'] != false) {
+    if (perms['keyboard'] != false && !ffi.ffiModel.viewOnly) {
       if (perms['clipboard'] != false) {
         menu.add(RemoteMenuEntry.disableClipboard(key, padding,
             dismissFunc: cancelFunc));
@@ -281,6 +301,17 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
             dismissFunc: cancelFunc));
       }
     }
+
+    menu.add(MenuEntryButton<String>(
+      childBuilder: (TextStyle? style) => Text(
+        translate('Copy Fingerprint'),
+        style: style,
+      ),
+      proc: () => onCopyFingerprint(FingerprintState.find(key).value),
+      padding: padding,
+      dismissOnClicked: true,
+      dismissCallback: cancelFunc,
+    ));
 
     return mod_menu.PopupMenu<String>(
       items: menu

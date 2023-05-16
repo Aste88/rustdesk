@@ -17,11 +17,12 @@ import url_launcher_macos
 import wakelock_macos
 import window_manager
 import window_size
+import texture_rgba_renderer
 
 class MainFlutterWindow: NSWindow {
     override func awakeFromNib() {
         if (!rustdesk_core_main()){
-            print("Rustdesk core returns false, exiting without launching Flutter app")
+            print("Rustdesk core returns false, exiting without launching Flutter app.")
             NSApplication.shared.terminate(self)
         }
         let flutterViewController = FlutterViewController.init()
@@ -49,6 +50,7 @@ class MainFlutterWindow: NSWindow {
             UrlLauncherPlugin.register(with: controller.registrar(forPlugin: "UrlLauncherPlugin"))
             WakelockMacosPlugin.register(with: controller.registrar(forPlugin: "WakelockMacosPlugin"))
             WindowSizePlugin.register(with: controller.registrar(forPlugin: "WindowSizePlugin"))
+            TextureRgbaRendererPlugin.register(with: controller.registrar(forPlugin: "TextureRgbaRendererPlugin"))
         }
         
         super.awakeFromNib()

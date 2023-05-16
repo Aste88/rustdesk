@@ -1,16 +1,18 @@
-use hbb_common::log;
+#[cfg(not(debug_assertions))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::platform::breakdown_callback;
+#[cfg(not(debug_assertions))]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use hbb_common::platform::register_breakdown_handler;
+use hbb_common::{allow_err, log};
 
 /// shared by flutter and sciter main function
 ///
 /// [Note]
 /// If it returns [`None`], then the process will terminate, and flutter gui will not be started.
 /// If it returns [`Some`], then the process will continue, and flutter gui will be started.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn core_main() -> Option<Vec<String>> {
-    // https://docs.rs/flexi_logger/latest/flexi_logger/error_info/index.html#write
-    // though async logger more efficient, but it also causes more problems, disable it for now
-    // let mut _async_logger_holder: Option<flexi_logger::LoggerHandle> = None;
     let mut args = Vec::new();
     let mut flutter_args = Vec::new();
     let mut i = 0;
@@ -40,8 +42,9 @@ pub fn core_main() -> Option<Vec<String>> {
         }
         i += 1;
     }
+    #[cfg(not(debug_assertions))]
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    register_breakdown_handler();
+    register_breakdown_handler(breakdown_callback);
     #[cfg(target_os = "linux")]
     #[cfg(feature = "flutter")]
     {
@@ -76,35 +79,14 @@ pub fn core_main() -> Option<Vec<String>> {
                 || (!click_setup && crate::platform::is_elevated(None).unwrap_or(false)));
         crate::portable_service::client::set_quick_support(_is_quick_support);
     }
-    #[cfg(debug_assertions)]
-    {
-        use hbb_common::env_logger::*;
-        init_from_env(Env::default().filter_or(DEFAULT_FILTER_ENV, "info"));
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        let mut path = hbb_common::config::Config::log_path();
-        if args.len() > 0 && args[0].starts_with("--") {
-            let name = args[0].replace("--", "");
-            if !name.is_empty() {
-                path.push(name);
-            }
-        }
-        use flexi_logger::*;
-        if let Ok(x) = Logger::try_with_env_or_str("debug") {
-            // _async_logger_holder =
-            x.log_to_file(FileSpec::default().directory(path))
-                //.write_mode(WriteMode::Async)
-                .format(opt_format)
-                .rotate(
-                    Criterion::Age(Age::Day),
-                    Naming::Timestamps,
-                    Cleanup::KeepLogFiles(6),
-                )
-                .start()
-                .ok();
+    let mut log_name = "".to_owned();
+    if args.len() > 0 && args[0].starts_with("--") {
+        let name = args[0].replace("--", "");
+        if !name.is_empty() {
+            log_name = name;
         }
     }
+    hbb_common::init_log(false, &log_name);
     #[cfg(windows)]
     if !crate::platform::is_installed()
         && args.is_empty()
@@ -122,6 +104,9 @@ pub fn core_main() -> Option<Vec<String>> {
         crate::platform::elevate_or_run_as_system(click_setup, _is_elevate, _is_run_as_system);
         return None;
     }
+    #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    init_plugins(&args);
     if args.is_empty() {
         std::thread::spawn(move || crate::start_server(false));
     } else {
@@ -129,7 +114,7 @@ pub fn core_main() -> Option<Vec<String>> {
         {
             use crate::platform;
             if args[0] == "--uninstall" {
-                if let Err(err) = platform::uninstall_me() {
+                if let Err(err) = platform::uninstall_me(true) {
                     log::error!("Failed to uninstall: {}", err);
                 }
                 return None;
@@ -147,9 +132,9 @@ pub fn core_main() -> Option<Vec<String>> {
                 hbb_common::allow_err!(platform::update_me());
                 return None;
             } else if args[0] == "--reinstall" {
-                hbb_common::allow_err!(platform::uninstall_me());
+                hbb_common::allow_err!(platform::uninstall_me(false));
                 hbb_common::allow_err!(platform::install_me(
-                    "desktopicon startmenu",
+                    "desktopicon startmenu driverCert",
                     "".to_owned(),
                     false,
                     false,
@@ -157,15 +142,15 @@ pub fn core_main() -> Option<Vec<String>> {
                 return None;
             } else if args[0] == "--silent-install" {
                 hbb_common::allow_err!(platform::install_me(
-                    "desktopicon startmenu",
+                    "desktopicon startmenu driverCert",
                     "".to_owned(),
                     true,
                     args.len() > 1,
                 ));
                 return None;
-            } else if args[0] == "--extract" {
-                #[cfg(feature = "with_rc")]
-                hbb_common::allow_err!(crate::rc::extract_resources(&args[1]));
+            } else if args[0] == "--install-cert" {
+                #[cfg(windows)]
+                hbb_common::allow_err!(crate::platform::windows::install_cert(&args[1]));
                 return None;
             } else if args[0] == "--portable-service" {
                 crate::platform::elevate_or_run_as_system(
@@ -227,6 +212,13 @@ pub fn core_main() -> Option<Vec<String>> {
                 }
             }
             return None;
+        } else if args[0] == "--get-id" {
+            if crate::platform::is_root() {
+                println!("{}", crate::ipc::get_id());
+            } else {
+                println!("Permission denied!");
+            }
+            return None;
         } else if args[0] == "--check-hwcodec-config" {
             #[cfg(feature = "hwcodec")]
             scrap::hwcodec::check_config();
@@ -235,6 +227,27 @@ pub fn core_main() -> Option<Vec<String>> {
             // call connection manager to establish connections
             // meanwhile, return true to call flutter window to show control panel
             crate::ui_interface::start_option_status_sync();
+        } else if args[0] == "--cm-no-ui" {
+            #[cfg(feature = "flutter")]
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            crate::flutter::connection_manager::start_cm_no_ui();
+            return None;
+        } else {
+            #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            if args[0] == "--plugin-install" {
+                if args.len() == 2 {
+                    crate::plugin::change_uninstall_plugin(&args[1], false);
+                } else if args.len() == 3 {
+                    crate::plugin::install_plugin_with_url(&args[1], &args[2]);
+                }
+                return None;
+            } else if args[0] == "--plugin-uninstall" {
+                if args.len() == 2 {
+                    crate::plugin::change_uninstall_plugin(&args[1], true);
+                }
+                return None;
+            }
         }
     }
     //_async_logger_holder.map(|x| x.flush());
@@ -242,6 +255,23 @@ pub fn core_main() -> Option<Vec<String>> {
     return Some(flutter_args);
     #[cfg(not(feature = "flutter"))]
     return Some(args);
+}
+
+#[inline]
+#[cfg(all(feature = "flutter", feature = "plugin_framework"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn init_plugins(args: &Vec<String>) {
+    if args.is_empty() || "--server" == (&args[0] as &str) {
+        #[cfg(debug_assertions)]
+        let load_plugins = true;
+        #[cfg(not(debug_assertions))]
+        let load_plugins = crate::platform::is_installed();
+        if load_plugins {
+            crate::plugin::init();
+        }
+    } else if "--service" == (&args[0] as &str) {
+        allow_err!(crate::plugin::remove_uninstalled());
+    }
 }
 
 fn import_config(path: &str) {

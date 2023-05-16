@@ -43,12 +43,14 @@ class RustDeskMultiWindowManager {
 
   Future<dynamic> newRemoteDesktop(
     String remoteId, {
+    String? password,
     String? switch_uuid,
     bool? forceRelay,
   }) async {
     var params = {
       "type": WindowType.RemoteDesktop.index,
       "id": remoteId,
+      "password": password,
       "forceRelay": forceRelay
     };
     if (switch_uuid != null) {
@@ -216,6 +218,8 @@ class RustDeskMultiWindowManager {
         }
         await WindowController.fromWindowId(wId).setPreventClose(false);
         await WindowController.fromWindowId(wId).close();
+        // unregister the sub window in the main window.
+        unregisterActiveWindow(wId);
       } catch (e) {
         debugPrint("$e");
         return;

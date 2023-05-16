@@ -17,27 +17,28 @@ import '../../consts.dart';
 import '../../common/widgets/overlay.dart';
 import '../../common/widgets/remote_input.dart';
 import '../../common.dart';
-import '../../mobile/widgets/dialog.dart';
+import '../../common/widgets/dialog.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
 import '../../common/shared_state.dart';
 import '../../utils/image.dart';
-import '../widgets/remote_menubar.dart';
+import '../widgets/remote_toolbar.dart';
 import '../widgets/kb_layout_type_chooser.dart';
 
-bool _isCustomCursorInited = false;
 final SimpleWrapper<bool> _firstEnterImage = SimpleWrapper(false);
 
 class RemotePage extends StatefulWidget {
   RemotePage({
     Key? key,
     required this.id,
+    required this.password,
     required this.menubarState,
     this.switchUuid,
     this.forceRelay,
   }) : super(key: key);
 
   final String id;
+  final String? password;
   final MenubarState menubarState;
   final String? switchUuid;
   final bool? forceRelay;
@@ -63,6 +64,9 @@ class _RemotePageState extends State<RemotePage>
   late RxBool _zoomCursor;
   late RxBool _remoteCursorMoved;
   late RxBool _keyboardEnabled;
+  late RxInt _textureId;
+  late int _textureKey;
+  final useTextureRender = bind.mainUseTextureRender();
 
   final _blockableOverlayState = BlockableOverlayState();
 
@@ -73,27 +77,13 @@ class _RemotePageState extends State<RemotePage>
   late FFI _ffi;
 
   void _initStates(String id) {
-    PrivacyModeState.init(id);
-    BlockInputState.init(id);
-    CurrentDisplayState.init(id);
-    KeyboardEnabledState.init(id);
-    ShowRemoteCursorState.init(id);
-    RemoteCursorMovedState.init(id);
-    final optZoomCursor = 'zoom-cursor';
-    PeerBoolOption.init(id, optZoomCursor, () => false);
-    _zoomCursor = PeerBoolOption.find(id, optZoomCursor);
+    initSharedStates(id);
+    _zoomCursor = PeerBoolOption.find(id, 'zoom-cursor');
     _showRemoteCursor = ShowRemoteCursorState.find(id);
     _keyboardEnabled = KeyboardEnabledState.find(id);
     _remoteCursorMoved = RemoteCursorMovedState.find(id);
-  }
-
-  void _removeStates(String id) {
-    PrivacyModeState.delete(id);
-    BlockInputState.delete(id);
-    CurrentDisplayState.delete(id);
-    ShowRemoteCursorState.delete(id);
-    KeyboardEnabledState.delete(id);
-    RemoteCursorMovedState.delete(id);
+    _textureKey = newTextureId;
+    _textureId = RxInt(-1);
   }
 
   @override
@@ -108,6 +98,7 @@ class _RemotePageState extends State<RemotePage>
     });
     _ffi.start(
       widget.id,
+      password: widget.password,
       switchUuid: widget.switchUuid,
       forceRelay: widget.forceRelay,
     );
@@ -119,7 +110,20 @@ class _RemotePageState extends State<RemotePage>
     if (!Platform.isLinux) {
       Wakelock.enable();
     }
+    // Register texture.
+    _textureId.value = -1;
+    if (useTextureRender) {
+      textureRenderer.createTexture(_textureKey).then((id) async {
+        debugPrint("id: $id, texture_key: $_textureKey");
+        if (id != -1) {
+          final ptr = await textureRenderer.getTexturePtr(_textureKey);
+          platformFFI.registerTexture(widget.id, ptr);
+          _textureId.value = id;
+        }
+      });
+    }
     _ffi.ffiModel.updateEventListener(widget.id);
+    bind.pluginSyncUi(syncTo: kAppTypeDesktopRemote);
     _ffi.qualityMonitorModel.checkShowQualityMonitor(widget.id);
     // Session option should be set after models.dart/FFI.start
     _showRemoteCursor.value = bind.sessionGetToggleOptionSync(
@@ -139,12 +143,7 @@ class _RemotePageState extends State<RemotePage>
     //   _isCustomCursorInited = true;
     // }
 
-    _ffi.dialogManager.setOverlayState(_blockableOverlayState);
-    _ffi.chatModel.setOverlayState(_blockableOverlayState);
-    // make remote page penetrable automatically, effective for chat over remote
-    _blockableOverlayState.onMiddleBlockedClick = () {
-      _blockableOverlayState.setMiddleBlocked(false);
-    };
+    _blockableOverlayState.applyFfi(_ffi);
   }
 
   @override
@@ -178,11 +177,35 @@ class _RemotePageState extends State<RemotePage>
     if (Platform.isWindows) {
       _isWindowBlur = false;
     }
+    if (!Platform.isLinux) {
+      Wakelock.enable();
+    }
+  }
+
+  // When the window is unminimized, onWindowMaximize or onWindowRestore can be called when the old state was maximized or not.
+  @override
+  void onWindowMaximize() {
+    super.onWindowMaximize();
+    if (!Platform.isLinux) {
+      Wakelock.enable();
+    }
+  }
+
+  @override
+  void onWindowMinimize() {
+    super.onWindowMinimize();
+    if (!Platform.isLinux) {
+      Wakelock.disable();
+    }
   }
 
   @override
   void dispose() {
     debugPrint("REMOTE PAGE dispose ${widget.id}");
+    if (useTextureRender) {
+      platformFFI.registerTexture(widget.id, 0);
+      textureRenderer.closeTexture(_textureKey);
+    }
     // ensure we leave this session, this is a double check
     bind.sessionEnterOrLeave(id: widget.id, enter: false);
     DesktopMultiWindow.removeListener(this);
@@ -199,12 +222,12 @@ class _RemotePageState extends State<RemotePage>
     }
     Get.delete<FFI>(tag: widget.id);
     super.dispose();
-    _removeStates(widget.id);
+    removeSharedStates(widget.id);
   }
 
   Widget buildBody(BuildContext context) {
     return Scaffold(
-      backgroundColor: Theme.of(context).backgroundColor,
+      backgroundColor: Theme.of(context).colorScheme.background,
 
       /// the Overlay key will be set with _blockableOverlayState in BlockableOverlay
       /// see override build() in [BlockableOverlay]
@@ -287,6 +310,10 @@ class _RemotePageState extends State<RemotePage>
   }
 
   void leaveView(PointerExitEvent evt) {
+    if (_ffi.ffiModel.keyboard) {
+      _ffi.inputModel.tryMoveEdgeOnExit(evt.position);
+    }
+
     _cursorOverImage.value = false;
     _firstEnterImage.value = false;
     if (_onEnterOrLeaveImage4Menubar != null) {
@@ -308,8 +335,8 @@ class _RemotePageState extends State<RemotePage>
     PointerExitEventListener? onExit,
   ) {
     return RawPointerMouseRegion(
-      onEnter: enterView,
-      onExit: leaveView,
+      onEnter: onEnter,
+      onExit: onExit,
       onPointerDown: (event) {
         // A double check for blur status.
         // Note: If there's an `onPointerDown` event is triggered, `_isWindowBlur` is expected being false.
@@ -346,6 +373,8 @@ class _RemotePageState extends State<RemotePage>
           cursorOverImage: _cursorOverImage,
           keyboardEnabled: _keyboardEnabled,
           remoteCursorMoved: _remoteCursorMoved,
+          textureId: _textureId,
+          useTextureRender: useTextureRender,
           listenerBuilder: (child) =>
               _buildRawPointerMouseRegion(child, enterView, leaveView),
         );
@@ -383,6 +412,8 @@ class ImagePaint extends StatefulWidget {
   final RxBool cursorOverImage;
   final RxBool keyboardEnabled;
   final RxBool remoteCursorMoved;
+  final RxInt textureId;
+  final bool useTextureRender;
   final Widget Function(Widget)? listenerBuilder;
 
   ImagePaint(
@@ -392,6 +423,8 @@ class ImagePaint extends StatefulWidget {
       required this.cursorOverImage,
       required this.keyboardEnabled,
       required this.remoteCursorMoved,
+      required this.textureId,
+      required this.useTextureRender,
       this.listenerBuilder})
       : super(key: key);
 
@@ -466,10 +499,19 @@ class _ImagePaintState extends State<ImagePaint> {
       final imageWidth = c.getDisplayWidth() * s;
       final imageHeight = c.getDisplayHeight() * s;
       final imageSize = Size(imageWidth, imageHeight);
-      final imageWidget = CustomPaint(
-        size: imageSize,
-        painter: ImagePainter(image: m.image, x: 0, y: 0, scale: s),
-      );
+      late final Widget imageWidget;
+      if (widget.useTextureRender) {
+        imageWidget = SizedBox(
+          width: imageWidth,
+          height: imageHeight,
+          child: Obx(() => Texture(textureId: widget.textureId.value)),
+        );
+      } else {
+        imageWidget = CustomPaint(
+          size: imageSize,
+          painter: ImagePainter(image: m.image, x: 0, y: 0, scale: s),
+        );
+      }
 
       return NotificationListener<ScrollNotification>(
           onNotification: (notification) {
@@ -493,11 +535,31 @@ class _ImagePaintState extends State<ImagePaint> {
                 context, _buildListener(imageWidget), c.size, imageSize)),
           ));
     } else {
-      final imageWidget = CustomPaint(
-        size: Size(c.size.width, c.size.height),
-        painter: ImagePainter(image: m.image, x: c.x / s, y: c.y / s, scale: s),
-      );
-      return mouseRegion(child: _buildListener(imageWidget));
+      late final Widget imageWidget;
+      if (c.size.width > 0 && c.size.height > 0) {
+        if (widget.useTextureRender) {
+          imageWidget = Stack(
+            children: [
+              Positioned(
+                left: c.x,
+                top: c.y,
+                width: c.getDisplayWidth() * s,
+                height: c.getDisplayHeight() * s,
+                child: Texture(textureId: widget.textureId.value),
+              )
+            ],
+          );
+        } else {
+          imageWidget = CustomPaint(
+            size: Size(c.size.width, c.size.height),
+            painter:
+                ImagePainter(image: m.image, x: c.x / s, y: c.y / s, scale: s),
+          );
+        }
+        return mouseRegion(child: _buildListener(imageWidget));
+      } else {
+        return Container();
+      }
     }
   }
 

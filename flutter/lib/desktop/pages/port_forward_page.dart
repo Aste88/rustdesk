@@ -11,7 +11,7 @@ import 'package:wakelock/wakelock.dart';
 
 const double _kColumn1Width = 30;
 const double _kColumn4Width = 100;
-const double _kRowHeight = 50;
+const double _kRowHeight = 60;
 const double _kTextLeftMargin = 20;
 
 class _PortForward {
@@ -49,7 +49,10 @@ class _PortForwardPageState extends State<PortForwardPage>
   void initState() {
     super.initState();
     _ffi = FFI();
-    _ffi.start(widget.id, isPortForward: true, forceRelay: widget.forceRelay);
+    _ffi.start(widget.id,
+        isPortForward: true,
+        forceRelay: widget.forceRelay,
+        isRdp: widget.isRDP);
     Get.put(_ffi, tag: 'pf_${widget.id}');
     if (!Platform.isLinux) {
       Wakelock.enable();
@@ -91,7 +94,7 @@ class _PortForwardPageState extends State<PortForwardPage>
                 Flexible(
                   child: Container(
                     decoration: BoxDecoration(
-                        color: Theme.of(context).backgroundColor,
+                        color: Theme.of(context).colorScheme.background,
                         border: Border.all(width: 1, color: MyTheme.border)),
                     child:
                         widget.isRDP ? buildRdp(context) : buildTunnel(context),
@@ -134,7 +137,7 @@ class _PortForwardPageState extends State<PortForwardPage>
 
     return Theme(
       data: Theme.of(context)
-          .copyWith(backgroundColor: Theme.of(context).backgroundColor),
+          .copyWith(backgroundColor: Theme.of(context).colorScheme.background),
       child: Obx(() => ListView.builder(
           controller: ScrollController(),
           itemCount: pfs.length + 2,
@@ -169,7 +172,8 @@ class _PortForwardPageState extends State<PortForwardPage>
 
     return Container(
       height: _kRowHeight,
-      decoration: BoxDecoration(color: Theme.of(context).backgroundColor),
+      decoration:
+          BoxDecoration(color: Theme.of(context).colorScheme.background),
       child: Row(children: [
         buildTunnelInputCell(context,
             controller: localPortController,
@@ -182,8 +186,6 @@ class _PortForwardPageState extends State<PortForwardPage>
             controller: remotePortController,
             inputFormatters: portInputFormatter),
         ElevatedButton(
-          style: ElevatedButton.styleFrom(
-              elevation: 0, side: const BorderSide(color: MyTheme.border)),
           onPressed: () async {
             int? localPort = int.tryParse(localPortController.text);
             int? remotePort = int.tryParse(remotePortController.text);
@@ -207,7 +209,7 @@ class _PortForwardPageState extends State<PortForwardPage>
           child: Text(
             translate('Add'),
           ),
-        ).marginAll(10),
+        ).marginSymmetric(horizontal: 10),
       ]),
     );
   }
@@ -216,26 +218,15 @@ class _PortForwardPageState extends State<PortForwardPage>
       {required TextEditingController controller,
       List<TextInputFormatter>? inputFormatters,
       String? hint}) {
-    final textColor = Theme.of(context).textTheme.titleLarge?.color;
     return Expanded(
-      child: TextField(
-        controller: controller,
-        inputFormatters: inputFormatters,
-        cursorColor: textColor,
-        cursorHeight: 20,
-        cursorWidth: 1,
-        decoration: InputDecoration(
-            border: OutlineInputBorder(
-                borderSide: BorderSide(color: MyTheme.color(context).border!)),
-            focusedBorder: OutlineInputBorder(
-                borderSide: BorderSide(color: MyTheme.color(context).border!)),
-            fillColor: Theme.of(context).backgroundColor,
-            contentPadding: const EdgeInsets.all(10),
-            hintText: hint,
-            hintStyle:
-                TextStyle(color: Theme.of(context).hintColor, fontSize: 16)),
-        style: TextStyle(color: textColor, fontSize: 16),
-      ).marginAll(10),
+      child: Padding(
+          padding: const EdgeInsets.all(10.0),
+          child: TextField(
+              controller: controller,
+              inputFormatters: inputFormatters,
+              decoration: InputDecoration(
+                hintText: hint,
+              ))),
     );
   }
 
@@ -251,7 +242,7 @@ class _PortForwardPageState extends State<PortForwardPage>
               ? MyTheme.currentThemeMode() == ThemeMode.dark
                   ? const Color(0xFF202020)
                   : const Color(0xFFF4F5F6)
-              : Theme.of(context).backgroundColor),
+              : Theme.of(context).colorScheme.background),
       child: Row(children: [
         text(pf.localPort.toString()),
         const SizedBox(width: _kColumn1Width),
@@ -293,7 +284,7 @@ class _PortForwardPageState extends State<PortForwardPage>
         ).marginOnly(left: _kTextLeftMargin));
     return Theme(
       data: Theme.of(context)
-          .copyWith(backgroundColor: Theme.of(context).backgroundColor),
+          .copyWith(backgroundColor: Theme.of(context).colorScheme.background),
       child: ListView.builder(
           controller: ScrollController(),
           itemCount: 2,
@@ -312,8 +303,8 @@ class _PortForwardPageState extends State<PortForwardPage>
             } else {
               return Container(
                 height: _kRowHeight,
-                decoration:
-                    BoxDecoration(color: Theme.of(context).backgroundColor),
+                decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.background),
                 child: Row(children: [
                   Expanded(
                     child: Align(
@@ -321,14 +312,10 @@ class _PortForwardPageState extends State<PortForwardPage>
                       child: SizedBox(
                         width: 120,
                         child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                              elevation: 0,
-                              side: const BorderSide(color: MyTheme.border)),
-                          onPressed: () => bind.sessionNewRdp(id: widget.id),
+                          onPressed: () =>
+                              bind.sessionNewRdp(id: "pf_${widget.id}"),
                           child: Text(
                             translate('New RDP'),
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w300, fontSize: 14),
                           ),
                         ).marginSymmetric(vertical: 10),
                       ).marginOnly(left: 20),
